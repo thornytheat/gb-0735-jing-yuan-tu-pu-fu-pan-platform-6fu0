@@ -15,6 +15,29 @@
 
 档头可换序。同档再次出现完整档头会新开一段，随后的数据使用该段列映射。每档第一张有效档头从记录账中扣除。重复档头、空记录和坏栏保留起止行与原始字段。CSV 断裂、档头不完整、声明条数不符会拒绝整个输入，空档、全空行、仅档头分别报码。
 
+### 未知栏名与分段隔离
+
+客户切换图档栏名后，旧机台遗留文件可能混入新栏名（如 `tool_id/col_x/...`）。读取器不按栏名文本猜义，而按结构识别档头样行：固定 7 栏齐全，且 `x/y/attempt/bin` 四个数值位不含任何整数（全角数字先 NFKC）的行视为档头。
+
+- 第一张档头必须是可识别档头，否则整档按 `BAD_HEADER` 拒绝；未知段只允许出现在后续段。
+- 可识别档头新开 `recognized` 段，正常绑定列映射并继续对表。
+- 未知栏名档头新开 `unknown` 段，档头行记 `UNKNOWN_HEADER`，段内随后每行记 `UNKNOWN_SEGMENT`，整段隔离、不进入坐标对表与复测裁决，原始字段与物理行全部保留。
+- 未知段后再遇可识别档头即新开 `recognized` 段恢复对表，已隔离段不影响后续采信。
+- 段隔离不破坏守恒：未知段数据行仍计入声明数据与实收记录，五类互斥桶与 `RECORD_COUNT_MISMATCH` 校验照旧。
+
+每档统计在原有 `segments` 外新增 `recognized_segments`、`unknown_segments` 与 `segments_detail`（每段的索引、起止行、状态、栏位绑定或未知栏名、数据行数）。行记录新增 `segment` 段索引，空行归属当前段。
+
+### 采信裁决
+
+运行清单的 `intake` 字段给出 `CLEAN/QUARANTINED` 状态与未知段数。资料员在图档采信页对每批二选一裁决，落库到独立于不可变快照的 `wafer_adjudications` 表：
+
+| 裁决 | 含义 | 约束 |
+|---|---|---|
+| `RETURN_BATCH` | 整批退回客户 | 任意批次均可 |
+| `ACCEPT_PARTIAL` | 接收可识别段，未知段保持隔离，采信结果继续对表 | 仅 `QUARANTINED` 批次，否则 `NO_UNKNOWN_SEGMENT` |
+
+裁决带说明、UTC 时间与 `attempt_count`。同档重复提交相同裁决只累加 `attempt_count`，不新增运行也不新增裁决行；已裁决后改投另一动作返回 `ADJUDICATION_LOCKED`（409），原裁决保留。运行号由输入指纹决定，同档重试与应用重启后旧运行号和裁决都能查回；裁决写入与快照写入各自单事务，存储中断时旧版完整结果不受影响。
+
 ## 坐标与物理掩模
 
 `origin_x/origin_y` 为机台原点。先扣原点，再应用 `x_left/y_down` 将局部轴转为右上为正。`notch` 是此时局部坐标的方向，取 `N/E/S/W`。设 `mirror` 为真时同时反射坐标和缺口向量的 X 分量。最后逆时针旋转 0/90/180/270 度，让缺口向量到达 `(0,-1)`。缺口最终朝南，显示顺序从北到南。
@@ -40,7 +63,7 @@
 
 | 阶段 | 状态或原因码 |
 |---|---|
-| 采信 | `BLANK_ROW` 空记录、`REPEATED_HEADER` 分段档头、`COLUMN_COUNT` 栏数不符 |
+| 采信 | `BLANK_ROW` 空记录、`REPEATED_HEADER` 分段档头、`COLUMN_COUNT` 栏数不符、`UNKNOWN_HEADER` 未知栏名档头、`UNKNOWN_SEGMENT` 未知段隔离 |
 | 对表 | `UNKNOWN_WAFER` 未登记片号、`BAD_COORDINATE` 非法坐标 |
 | 掩模 | `OUT_OF_GRID` 阵列外、`OUTSIDE_DISC` 圆片外、`EDGE_EXCLUSION` 边缘带、`NOTCH_VOID` 缺口空位 |
 | 裁决 | `BAD_ATTEMPT` 测次无效、`NO_RESULT` 空测、`BAD_RESULT` 判定无效、`BAD_BIN` 分档不符、`SAME_ATTEMPT_CONFLICT` 同次矛盾、`DUPLICATE_RESULT` 同次同值 |

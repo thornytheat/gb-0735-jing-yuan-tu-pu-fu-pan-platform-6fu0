@@ -7,7 +7,7 @@
 
 | 模块 | 使用者动作 | 入口 | 核心文件 | 测试 |
 |---|---|---|---|---|
-| M1 图档采信 | 逐档核查编码、重复档头与坏栏 | `GET /api/runs/{run_id}/intake` | `app/modules/intake/reader.py` `app/modules/intake/catalog.py` | `tests/test_intake.py` |
+| M1 图档采信 | 逐档核查编码、重复档头、坏栏与未知栏名段，裁决整批退回或分段接收 | `GET /api/runs/{run_id}/intake` `POST /api/runs/{run_id}/adjudication` | `app/modules/intake/reader.py` `app/modules/intake/catalog.py` `app/modules/runs/service.py` | `tests/test_intake.py` `tests/test_legacy_intake.py` `tests/test_adjudication.py` |
 | M2 坐标对表 | 比较原点位和统一南缺口点位，按机台试算 | `GET /api/runs/{run_id}/coordinates/probe` | `app/modules/coordinates/transform.py` | `tests/test_coordinates.py` |
 | M3 有效芯粒 | 从圆片阵列查看有效位、边缘及缺口 | `GET /api/runs/{run_id}/mask/{wafer}` | `app/modules/mask/geometry.py` `app/modules/mask/view.py` | `tests/test_mask.py` |
 | M4 复测裁决 | 筛选裁决与测次冲突，定位原始证据 | `GET /api/runs/{run_id}/retest/{wafer}` | `app/modules/retest/measurements.py` `app/modules/retest/arbitrate.py` | `tests/test_retest.py` |
@@ -31,11 +31,16 @@
 | TRAP-17 | `probe-b.csv` 中文栏名且第二段换序 | 错对 X/Y 或分档 | 映射别名并按段绑定字段 | `app/modules/intake/reader.py` | `tests/test_intake.py::test_segment_headers_advance_reordered_contract` |
 | TRAP-18 | 空文件、空行与仅档头的构造输入 | 产生零行成功批次 | 三态分别返回错误码 | `app/modules/intake/reader.py` | `tests/test_intake.py::test_empty_header_and_blank_are_separate` |
 | TRAP-19 | `(0,1)` 多测次，2 号在 10 号之后到达 | 误选最后行或字典序最大值 | 取最大有效测次号 | `app/modules/retest/arbitrate.py` | `tests/test_retest.py::test_numeric_attempt_precedence_ignores_arrival_order` |
+| TRAP-20 | `legacy-probe.csv` 旧机台新栏名 `tool_id,col_x,...` 混在同档 | 按栏名硬匹配，未知栏位冒充有效采信 | 按结构识别档头样行，未知段整段隔离 `UNKNOWN_SEGMENT`，再遇可识别档头恢复对表 | `app/modules/intake/reader.py` | `tests/test_legacy_intake.py::test_unknown_header_starts_quarantined_segment_and_keeps_raw_columns` `tests/test_legacy_intake.py::test_recognized_header_after_unknown_segment_resumes_table_matching` |
+| TRAP-21 | 同档未知段数据行数值位恰好是整数，朴素栏名黑名单漏掉 | 未知行被当数据写入晶圆图 | 数值位整数只用于排除"档头样行"，段状态一旦为 unknown 即整段隔离，不依赖栏名白名单 | `app/modules/intake/reader.py` | `tests/test_legacy_intake.py::test_structural_header_check_does_not_misread_data_as_unknown_header` |
+| TRAP-22 | 资料员对同一批反复点裁决 | 每次重试新增一条记录、运行号漂移 | 裁决独立表 UPSERT，同裁决只累加 `attempt_count`；运行号仍由输入指纹决定 | `app/store.py` `app/modules/runs/service.py` | `tests/test_adjudication.py::test_retry_same_decision_is_idempotent_and_accumulates_once` `tests/test_adjudication.py::test_same_input_rerun_keeps_original_run_id_and_adjudication` |
+| TRAP-23 | 裁决落库瞬间存储中断 | 半截裁决覆盖旧结果或旧运行查不回 | 裁决与快照分表单事务，失败回滚后旧运行完整可查；已裁决改判返回 `ADJUDICATION_LOCKED` | `app/store.py` `app/modules/runs/service.py` | `tests/test_adjudication.py::test_storage_interruption_during_adjudication_leaves_previous_state_untouched` `tests/test_adjudication.py::test_changing_a_recorded_decision_is_locked` |
 
 补充反例包括经过 X 反射后重新推导缺口转角、圆形边缘等式包含、对角缺陷分簇、恢复点断开原失效带、平移阵列漏位以及同键并发只提交一次。
 
 ## 对账不变量
 
 - 有效位集合与裁决键集合相等，有效数守恒到四类最终状态。
-- 实收行按五类互斥归档，声明的逻辑数据量可独立回推。
+- 实收行按五类互斥归档，声明的逻辑数据量可独立回推；未知段行计入隔离桶，守恒式不变。
 - 对外提供一份证据包，同一规则版本下输入相同时运行号与结果摘要一致。
+- 裁决与不可变快照分表存储：同档同裁决重试幂等累加，改判加锁，存储中断不污染旧归档。

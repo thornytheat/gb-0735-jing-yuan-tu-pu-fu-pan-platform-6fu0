@@ -49,3 +49,29 @@ def test_unknown_sample_run_and_page_have_explicit_errors(client):
     for response, code in zip(attempts, ["SAMPLE_NOT_FOUND", "RUN_NOT_FOUND"]):
         assert response.status_code == 404 and response.json()["code"] == code
     assert client.get("/unknown").status_code == 404
+
+
+def test_legacy_batch_flows_through_all_modules_with_quarantine_and_verdict(client):
+    started = client.post("/api/runs", json={"sample": "legacy"})
+    assert started.status_code == 201
+    run_id = started.json()["manifest"]["run_id"]
+    base = f"/api/runs/{run_id}"
+    intake = client.get(base + "/intake").json()
+    assert intake["intake"] == {"state": "QUARANTINED", "unknown_segments": 1}
+    assert {seg["status"] for seg in intake["files"][0]["segments_detail"]} == {"recognized", "unknown"}
+    # 可识别段继续走完对表、掩模、裁决、簇、勾稽
+    for route, key in [("/coordinates", "rows"), ("/mask/W-03", "cells"), ("/retest/W-03", "cells"),
+                       ("/clusters/W-03", "points"), ("/yield", "wafers")]:
+        response = client.get(base + route)
+        assert response.status_code == 200, route
+    audit = client.get(base + "/yield").json()
+    assert audit["rows"]["balanced"] is True
+    # 资料员在采信页裁决，重试不重复建档
+    verdict = client.post(base + "/adjudication", json={"decision": "ACCEPT_PARTIAL", "reason": "夜班"})
+    assert verdict.status_code == 201
+    retry = client.post(base + "/adjudication", json={"decision": "ACCEPT_PARTIAL", "reason": "夜班"})
+    assert retry.status_code == 200 and retry.json()["adjudication"]["attempt_count"] == 2
+    assert client.post(base + "/rerun").json()["verified"] is True
+    exported = client.get(base + "/export")
+    assert exported.status_code == 200 and exported.json()["manifest"]["run_id"] == run_id
+    assert len(client.get("/api/runs").json()) == 1

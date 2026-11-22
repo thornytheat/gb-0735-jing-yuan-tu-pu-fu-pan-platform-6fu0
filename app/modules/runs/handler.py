@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.dependencies import Archive, Service
 from app.modules.runs.bundle import make_bundle
@@ -11,9 +11,14 @@ class RunRequest(BaseModel):
     sample: str
 
 
+class AdjudicationRequest(BaseModel):
+    decision: str
+    reason: str = Field(default="", max_length=200)
+
+
 @router.get("")
 def runs(service: Service):
-    return service.store.list()
+    return service.list_runs()
 
 
 @router.post("", status_code=201)
@@ -24,14 +29,24 @@ def start(request: RunRequest, service: Service, response: Response):
     return result
 
 
+@router.post("/{run_id}/adjudication", status_code=201)
+def adjudicate(run_id: str, request: AdjudicationRequest, service: Service, response: Response):
+    result = service.adjudicate(run_id, request.decision, request.reason.strip())
+    if not result["reused"]:
+        response.status_code = 201
+    else:
+        response.status_code = 200
+    return result
+
+
 @router.post("/{run_id}/rerun")
 def rerun(run_id: str, service: Service):
     return service.rerun(run_id)
 
 
 @router.get("/{run_id}")
-def run(archive: Archive):
-    return archive[0]
+def run(run_id: str, service: Service):
+    return service.run_detail(run_id)
 
 
 @router.get("/{run_id}/export")

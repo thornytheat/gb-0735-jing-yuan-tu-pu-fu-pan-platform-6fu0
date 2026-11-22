@@ -2,6 +2,8 @@ REASONS = {
     "BLANK_ROW": "空记录",
     "REPEATED_HEADER": "重复档头",
     "COLUMN_COUNT": "栏数不符",
+    "UNKNOWN_HEADER": "未知栏名档头",
+    "UNKNOWN_SEGMENT": "未知段隔离",
     "UNKNOWN_WAFER": "晶圆未登记",
     "BAD_COORDINATE": "坐标须为整数",
     "OUT_OF_GRID": "超出阵列",

@@ -118,20 +118,151 @@ export function renderCell(box, cell) {
   if (!cell.evidence.length) box.append(element('p', '该位置暂无原始行。', 'empty'));
 }
 
-async function intake({api, base}) {
-  const data = await api(`${base}/intake`);
+const verdictLabels = {
+  RETURN_BATCH: '整批退回',
+  ACCEPT_PARTIAL: '接收可识别段',
+  QUARANTINED: '含未知段待裁决',
+  CLEAN: '全部段可识别',
+  recognized: '采信',
+  unknown: '隔离',
+};
+
+function verdictStatus(decision) {
+  return element('span', verdictLabels[decision] ?? decision,
+    `status ${decision === 'RETURN_BATCH' ? 'fail' : decision === 'ACCEPT_PARTIAL' ? 'pass' : 'pending'}`);
+}
+
+function verdictCard(data, base, refresh) {
+  const box = q('#intake-verdict');
+  const state = data.intake.state;
+  const saved = data.adjudication;
+  text('#verdict-state', state === 'QUARANTINED'
+    ? `${verdictLabels.QUARANTINED} · ${data.intake.unknown_segments} 段` : verdictLabels.CLEAN);
+  const head = pairs([
+    ['采信状态', verdictStatus(state)],
+    ['未知段', data.intake.unknown_segments],
+    ['当前裁决', saved ? verdictStatus(saved.decision) : element('span', '待资料员裁决', 'status pending')],
+  ]);
+  if (saved) {
+    head.append(pairs([
+      ['裁决时间', saved.decided_at.replace('T', ' ').replace('+00:00', ' UTC')],
+      ['重试次数', saved.attempt_count],
+      ['裁决说明', saved.reason || '—'],
+    ]));
+  }
+  const actions = element('div', null, 'verdict-actions');
+  const reasonInput = element('input');
+  reasonInput.type = 'text';
+  reasonInput.maxLength = 200;
+  reasonInput.placeholder = '裁决说明（可选）';
+  reasonInput.setAttribute('aria-label', '裁决说明');
+  if (saved) {
+    reasonInput.value = saved.reason;
+    reasonInput.disabled = true;
+  }
+  const submit = async (decision) => {
+    if (saved && saved.decision !== decision) return;
+    actions.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+    try {
+      const response = await fetch(`${base}/adjudication`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({decision, reason: reasonInput.value}),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.message ?? `请求失败 HTTP ${response.status}`);
+      await refresh(body.reused ? '相同裁决重试已记录，未重复建档。' : '裁决已归档。');
+    } catch (error) {
+      const panel = q('#feedback');
+      panel.hidden = false;
+      panel.classList.add('error');
+      panel.textContent = error.message;
+      actions.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+    }
+  };
+  const returnBtn = element('button', '整批退回', 'btn');
+  returnBtn.type = 'button';
+  returnBtn.addEventListener('click', () => submit('RETURN_BATCH'));
+  const acceptBtn = element('button', '接收可识别段', 'btn primary');
+  acceptBtn.type = 'button';
+  acceptBtn.addEventListener('click', () => submit('ACCEPT_PARTIAL'));
+  if (state !== 'QUARANTINED') acceptBtn.disabled = true;
+  if (saved) {
+    returnBtn.disabled = true;
+    acceptBtn.disabled = true;
+  }
+  actions.append(reasonInput, returnBtn, acceptBtn);
+  const hint = element('p', state === 'QUARANTINED'
+    ? '未知栏名段已整段隔离，不参与对表；接收后可识别段继续流转，退回则整批交还客户。'
+    : '本批全部段可识别，仅可整批退回。', 'evidence-note');
+  box.replaceChildren(head, hint, actions);
+}
+
+function segmentRows(files) {
+  const rows = [];
+  for (const file of files) {
+    for (seg of file.segments_detail ?? []) {
+      rows.push({...seg, source: file.name});
+    }
+  }
+  return rows;
+}
+
+function drawIntake(data, api, base, refresh) {
   text('#source-total', `${data.files.length} 档`);
   table(q('#intake-files'), data.files, [
     ['图档', 'name', 'mono'], ['编码', 'encoding', 'mono'], ['段', 'segments', 'num'],
+    ['可识别段', 'recognized_segments', 'num'], ['未知段', 'unknown_segments', 'num'],
     ['物理行', 'physical_lines', 'num'], ['数据记录', 'data_count', 'num'],
   ]);
+  const isolatedCount = data.issues.filter((row) => row.bucket === 'isolated').length;
   q('#intake-summary').replaceChildren(pairs([
     ['数据记录', data.files.reduce((sum, file) => sum + file.data_count, 0)],
+    ['可识别段', data.files.reduce((sum, file) => sum + file.recognized_segments, 0)],
+    ['未知段', data.files.reduce((sum, file) => sum + file.unknown_segments, 0)],
+    ['隔离记录', isolatedCount],
     ['重复档头', data.issues.filter((row) => row.bucket === 'header').length],
-    ['空记录', data.issues.filter((row) => row.bucket === 'blank').length],
-    ['栏数不符', data.issues.filter((row) => row.code === 'COLUMN_COUNT').length],
+    ['空记录', data.issues.filter((row) => row.code === 'BLANK_ROW').length],
   ]));
-  table(q('#intake-issues'), data.issues, issueColumns);
+  const segments = segmentRows(data.files);
+  text('#segment-total', `${segments.length} 段 · ${data.intake.unknown_segments} 段隔离`);
+  table(q('#intake-segments'), segments, [
+    ['图档', 'source', 'mono'],
+    ['段号', (seg) => `#${seg.index + 1}`, 'num'],
+    ['采信', (seg) => verdictStatus(seg.status)],
+    ['起止行', (seg) => `${seg.start_line}–${seg.end_line}`, 'num'],
+    ['数据行', 'data_rows', 'num'],
+    ['栏位绑定', (seg) => seg.status === 'recognized'
+      ? seg.columns.join(' / ') : `未知栏名：${seg.unknown_columns.join(' / ')}`],
+  ]);
+  verdictCard(data, base, refresh);
+  drawIssues(data);
+}
+
+function drawIssues(data) {
+  table(q('#intake-issues'), data.issues, [
+    ['图档', 'source', 'mono'], ['行号', line, 'num'],
+    ['段', (row) => row.segment == null ? '—' : `#${row.segment + 1}`, 'num'],
+    ['晶圆', 'wafer', 'mono'], ['原因码', 'code', 'mono'], ['原因', 'reason'],
+    ['原始字段', (row) => row.raw.map((value) => JSON.stringify(value)).join(' · ')],
+  ]);
+}
+
+async function intake(context) {
+  const {api, base} = context;
+  const data = await api(`${base}/intake`);
+  const refresh = async (message) => {
+    const fresh = await api(`${base}/intake`);
+    Object.assign(data, fresh);
+    drawIntake(data, api, base, refresh);
+    if (message) {
+      const panel = q('#feedback');
+      panel.hidden = false;
+      panel.classList.remove('error');
+      panel.textContent = message;
+    }
+  };
+  drawIntake(data, api, base, refresh);
 }
 
 async function coordinates({api, base, signal}) {
@@ -284,7 +415,12 @@ function runs({run, manifests}) {
       link.href = `/runs?${new URLSearchParams({run: item.run_id})}`;
       if (item.run_id === run.run_id) link.setAttribute('aria-current','true');
       return link;
-    }], ['图批', 'lot', 'mono'], ['样例', 'label'], ['状态', (item) => status(item.status)],
+    }], ['图批', 'lot', 'mono'], ['样例', 'label'],
+    ['采信', (item) => element('span', item.intake ? verdictLabels[item.intake.state] ?? item.intake.state : '—',
+      `status ${item.intake?.state === 'QUARANTINED' ? 'conflict' : 'pass'}`)],
+    ['裁决', (item) => item.adjudication ? verdictStatus(item.adjudication.decision)
+      : element('span', '待裁决', 'status pending')],
+    ['状态', (item) => status(item.status)],
     ['生成 UTC', 'created_at', 'mono'],
   ]);
   q('#run-manifest').replaceChildren(pairs([['运行号', run.run_id], ['规则版本', run.rule_version],

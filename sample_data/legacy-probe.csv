@@ -1,0 +1,16 @@
+wafer,x,y,attempt,result,bin,note
+W-03,0,4,1,PASS,1,
+W-03,-2,3,1,PASS,1,
+W-03,-1,3,1,PASS,1,
+
+wafer,x,y,attempt,result,bin,note
+W-03,0,3,1,FAIL,2,边缘复测
+tool_id,col_x,row_y,probe_id,grade,score,remark
+W-03,1,2,1,PASS,1,旧机台未知栏名
+W-03,2,2,1,PASS,1,旧段第二行
+wafer,x,y,attempt,result,bin,note
+W-03,-1,-1,1,FAIL,3,恢复对表
+W-03,0,-1,1,PASS,1
+W-03,1,-1,2,FAIL,4,
+W-03,2,-1,1,PASS,1,坏栏,多一栏
+W-03,0,0,1,PASS,1,

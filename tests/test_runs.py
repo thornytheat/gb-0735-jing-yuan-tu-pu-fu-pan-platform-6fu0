@@ -29,8 +29,10 @@ def test_parallel_start_commits_one_archive(client):
 def test_rerun_recomputes_pinned_input_without_catalog(client, run_base):
     store = client.app.state.runs.store
     service = RunService(store, loader=lambda _: None)
-    manifest = client.get(run_base).json()
-    assert service.rerun(manifest["run_id"]) == {"manifest":manifest,"reused":True,"verified":True}
+    detail = client.get(run_base).json()
+    assert service.rerun(detail["run_id"]) == {"manifest": {k: v for k, v in detail.items()
+              if k not in ("adjudication", "intake")}, "reused": True, "verified": True}
+    assert detail["adjudication"] is None and detail["intake"]["state"] == "CLEAN"
     assert len(store.list()) == 1
 
 
